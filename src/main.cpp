@@ -253,8 +253,54 @@ void connectMQTT() {
   }
 }
 
+// Provision over USB serial without the phone portal. Send a line like:
+//   set host=abc.hivemq.cloud port=8883 user=HomeControl pass=secret id=dev1
+// Also accepts "portal" (reopen WiFi setup) and "reset" (wipe all settings).
+// Returns true when a broker host was newly set, so the caller can reconnect.
+// (Note: values can't contain spaces via this serial path.)
+bool handleSerialConfig() {
+  if (!Serial.available()) return false;
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  if (line == "portal") {
+    logf("CMD:  opening setup portal on request");
+    runProvisioning(true);
+    net.setInsecure();
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    return false;
+  }
+  if (line == "reset") {
+    logf("CMD:  wiping saved settings + WiFi, restarting");
+    prefs.begin("homecfg", false); prefs.clear(); prefs.end();
+    WiFiManager wm; wm.resetSettings();
+    delay(500); ESP.restart();
+  }
+  if (!line.startsWith("set ")) return false;
+
+  for (int i = 4; i < (int)line.length(); ) {
+    int sp = line.indexOf(' ', i);
+    if (sp < 0) sp = line.length();
+    String kv = line.substring(i, sp);
+    int eq = kv.indexOf('=');
+    if (eq > 0) {
+      String k = kv.substring(0, eq), v = kv.substring(eq + 1);
+      if      (k == "host") strlcpy(MQTT_HOST, v.c_str(), sizeof(MQTT_HOST));
+      else if (k == "user") strlcpy(MQTT_USER, v.c_str(), sizeof(MQTT_USER));
+      else if (k == "pass") strlcpy(MQTT_PASS, v.c_str(), sizeof(MQTT_PASS));
+      else if (k == "id")   strlcpy(DEVICE_ID, v.c_str(), sizeof(DEVICE_ID));
+      else if (k == "port") MQTT_PORT = (uint16_t) v.toInt();
+    }
+    i = sp + 1;
+  }
+  saveConfig();
+  logf("CFG:  saved from serial  host=%s port=%u user=%s devid=%s",
+       MQTT_HOST, MQTT_PORT, MQTT_USER, DEVICE_ID);
+  return MQTT_HOST[0] != 0;
+}
+
 void setup() {
   Serial.begin(115200);
+  Serial.setTimeout(200);
   delay(300);
   Serial.println();
   logf("==== ESP32-S3 IoT node booting ====");
@@ -283,14 +329,22 @@ void setup() {
   if (force) logf("BTN:  BOOT held at boot — opening setup portal");
   runProvisioning(force);
 
-  // A device with no broker can't do anything useful, so open the setup portal
-  // automatically (no button required) and keep reopening it until the broker
-  // details are entered and saved. This also covers the case where WiFi was
-  // already saved (from earlier firmware) and the portal would otherwise be
-  // skipped, leaving no chance to enter the MQTT settings.
-  while (!MQTT_HOST[0]) {
-    logf("CFG:  no broker configured — opening setup portal to enter MQTT details");
-    runProvisioning(true);
+  // A device with no broker can't do anything useful. First offer a ~30s window
+  // to provision over USB serial (send: set host=<h> port=8883 user=<u>
+  // pass=<p> id=dev1). If nothing arrives, fall back to the phone captive
+  // portal — and keep reopening it until a broker is saved.
+  if (!MQTT_HOST[0]) {
+    logf("CFG:  no broker set. Provision over serial within 30s:");
+    logf("CFG:    set host=<host> port=8883 user=<user> pass=<pass> id=dev1");
+    uint32_t start = millis();
+    while (!MQTT_HOST[0] && millis() - start < 30000) {
+      handleSerialConfig();
+      delay(50);
+    }
+    while (!MQTT_HOST[0]) {
+      logf("CFG:  no serial config — opening phone setup portal instead");
+      runProvisioning(true);
+    }
   }
 
   net.setInsecure();          // skip TLS cert validation (simplest; fine for a home broker)
@@ -300,22 +354,14 @@ void setup() {
 }
 
 void loop() {
-  // Serial escape hatch — reliable even if the BOOT button isn't wired on this
-  // board. Type "portal" to (re)open setup, or "reset" to wipe all settings.
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    if (cmd == "portal") {
-      logf("CMD:  opening setup portal on request");
-      runProvisioning(true);
-      net.setInsecure();
-      mqtt.setServer(MQTT_HOST, MQTT_PORT);
-    } else if (cmd == "reset") {
-      logf("CMD:  wiping saved settings + WiFi, restarting");
-      prefs.begin("homecfg", false); prefs.clear(); prefs.end();
-      WiFiManager wm; wm.resetSettings();
-      delay(500); ESP.restart();
-    }
+  // Serial escape hatch (reliable even if the BOOT button isn't wired):
+  //   set host=.. port=.. user=.. pass=.. id=..   provision/change the broker
+  //   portal                                       reopen the phone setup portal
+  //   reset                                        wipe all saved settings
+  if (handleSerialConfig()) {           // broker changed over serial -> reconnect
+    net.setInsecure();
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    if (mqtt.connected()) mqtt.disconnect();
   }
 
   // Keep WiFi up without reopening the portal on a transient drop.
