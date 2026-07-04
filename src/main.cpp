@@ -283,6 +283,16 @@ void setup() {
   if (force) logf("BTN:  BOOT held at boot — opening setup portal");
   runProvisioning(force);
 
+  // A device with no broker can't do anything useful, so open the setup portal
+  // automatically (no button required) and keep reopening it until the broker
+  // details are entered and saved. This also covers the case where WiFi was
+  // already saved (from earlier firmware) and the portal would otherwise be
+  // skipped, leaving no chance to enter the MQTT settings.
+  while (!MQTT_HOST[0]) {
+    logf("CFG:  no broker configured — opening setup portal to enter MQTT details");
+    runProvisioning(true);
+  }
+
   net.setInsecure();          // skip TLS cert validation (simplest; fine for a home broker)
   mqtt.setBufferSize(512);    // roomier buffer for TLS records
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
@@ -290,6 +300,24 @@ void setup() {
 }
 
 void loop() {
+  // Serial escape hatch — reliable even if the BOOT button isn't wired on this
+  // board. Type "portal" to (re)open setup, or "reset" to wipe all settings.
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd == "portal") {
+      logf("CMD:  opening setup portal on request");
+      runProvisioning(true);
+      net.setInsecure();
+      mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    } else if (cmd == "reset") {
+      logf("CMD:  wiping saved settings + WiFi, restarting");
+      prefs.begin("homecfg", false); prefs.clear(); prefs.end();
+      WiFiManager wm; wm.resetSettings();
+      delay(500); ESP.restart();
+    }
+  }
+
   // Keep WiFi up without reopening the portal on a transient drop.
   if (WiFi.status() != WL_CONNECTED) {
     logf("WiFi: connection lost, reconnecting");
