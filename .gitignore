@@ -4,5 +4,3 @@
 .vscode/launch.json
 .vscode/ipch
 
-# Local secrets (WiFi credentials) — never commit
-include/secrets.h
