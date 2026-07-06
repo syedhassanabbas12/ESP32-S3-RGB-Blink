@@ -278,15 +278,18 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   logf("      ignored: no channel matches this topic");
 }
 
-// Publish device health (signal, uptime, free heap) as retained JSON so the app
-// can show live diagnostics in the device detail sheet. Topic: home/<id>/telemetry
+#define FW_VERSION "2.4.0"
+
+// Publish device health (firmware, signal, uptime, free heap) as retained JSON
+// so the app can show live diagnostics in the device detail sheet.
+// Topic: home/<id>/telemetry
 void publishTelemetry() {
   if (!mqtt.connected()) return;
-  char topic[80], payload[96];
+  char topic[80], payload[128];
   snprintf(topic, sizeof(topic), "home/%s/telemetry", DEVICE_ID);
   snprintf(payload, sizeof(payload),
-           "{\"rssi\":%d,\"uptime\":%lu,\"heap\":%u}",
-           WiFi.RSSI(), (unsigned long)(millis() / 1000), ESP.getFreeHeap());
+           "{\"fw\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%u}",
+           FW_VERSION, WiFi.RSSI(), (unsigned long)(millis() / 1000), ESP.getFreeHeap());
   mqtt.publish(topic, payload, true);
 }
 
