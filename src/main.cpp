@@ -24,6 +24,8 @@
 #include <WiFiClientSecure.h>   // TLS transport for MQTT (HiveMQ Cloud :8883)
 #include <Preferences.h>        // NVS key/value store for saved settings
 #include <PubSubClient.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>   // over-the-air firmware update over HTTPS
 #include <esp_system.h>         // esp_reset_reason()
 #include <stdarg.h>             // va_list for logf()
 
@@ -258,6 +260,8 @@ void applyChannel(Channel &c, bool on) {
   publishState(c);
 }
 
+void doOTA(const String &url); // defined below; used by onMessage
+
 // Blink the RGB LEDs a few times to help locate this device, then restore their
 // previous state. Briefly blocking (~1s) — fine for an on-demand action.
 void identifyBlink() {
@@ -284,6 +288,10 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   logf("MQTT: rx  %s = \"%s\"", topic, msg.c_str());
 
   String t = topic;
+  if (t == String("home/") + DEVICE_ID + "/ota") {
+    doOTA(msg); // payload is the firmware image URL
+    return;
+  }
   if (t == String("home/") + DEVICE_ID + "/identify") {
     logf("CMD:  identify — blinking to locate device");
     identifyBlink();
@@ -310,7 +318,7 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   logf("      ignored: no channel matches this topic");
 }
 
-#define FW_VERSION "2.4.0"
+#define FW_VERSION "2.6.0"
 
 // Publish device health (firmware, signal, uptime, free heap) as retained JSON
 // so the app can show live diagnostics in the device detail sheet.
@@ -323,6 +331,51 @@ void publishTelemetry() {
            "{\"fw\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%u}",
            FW_VERSION, WiFi.RSSI(), (unsigned long)(millis() / 1000), ESP.getFreeHeap());
   mqtt.publish(topic, payload, true);
+}
+
+void publishOtaStatus(const char *msg) {
+  char t[80];
+  snprintf(t, sizeof(t), "home/%s/ota/status", DEVICE_ID);
+  mqtt.publish(t, msg, true);
+  logf("OTA:  %s", msg);
+}
+
+// Download + flash a firmware image over HTTPS, then reboot into it. Triggered
+// by an MQTT message on home/<id>/ota carrying the image URL. Blocking.
+void doOTA(const String &url) {
+  if (url.length() < 8) {
+    publishOtaStatus("error: no url");
+    return;
+  }
+  logf("OTA:  updating from %s", url.c_str());
+  publishOtaStatus("starting");
+
+  WiFiClientSecure otaClient;
+  otaClient.setInsecure(); // skip cert check (matches the broker setup)
+  otaClient.setTimeout(20000);
+  httpUpdate.rebootOnUpdate(true);
+  httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS); // GitHub redirects
+  httpUpdate.onProgress([](int cur, int total) {
+    static int last = -1;
+    int pct = total > 0 ? (int)((int64_t)cur * 100 / total) : 0;
+    if (pct / 25 != last / 25) { // ~every 25%
+      last = pct;
+      char m[24];
+      snprintf(m, sizeof(m), "downloading %d%%", pct);
+      publishOtaStatus(m);
+    }
+  });
+
+  t_httpUpdate_return ret = httpUpdate.update(otaClient, url);
+  if (ret == HTTP_UPDATE_FAILED) {
+    char m[110];
+    snprintf(m, sizeof(m), "error %d: %s", httpUpdate.getLastError(),
+             httpUpdate.getLastErrorString().c_str());
+    publishOtaStatus(m);
+  } else if (ret == HTTP_UPDATE_NO_UPDATES) {
+    publishOtaStatus("no update");
+  }
+  // HTTP_UPDATE_OK reboots into the new image before returning.
 }
 
 void connectMQTT() {
@@ -351,6 +404,9 @@ void connectMQTT() {
       char identifyTopic[80];
       snprintf(identifyTopic, sizeof(identifyTopic), "home/%s/identify", DEVICE_ID);
       mqtt.subscribe(identifyTopic);
+      char otaTopic[80];
+      snprintf(otaTopic, sizeof(otaTopic), "home/%s/ota", DEVICE_ID);
+      mqtt.subscribe(otaTopic);
       for (size_t i = 0; i < NUM_CH; i++) publishState(channels[i]);
       publishTelemetry();
     } else {
