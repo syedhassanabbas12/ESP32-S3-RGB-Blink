@@ -258,6 +258,25 @@ void applyChannel(Channel &c, bool on) {
   publishState(c);
 }
 
+// Blink the RGB LEDs a few times to help locate this device, then restore their
+// previous state. Briefly blocking (~1s) — fine for an on-demand action.
+void identifyBlink() {
+  bool prev[3] = { channels[0].state, channels[1].state, channels[2].state };
+  for (int i = 0; i < 6; i++) {
+    bool on = (i % 2) == 0;
+    for (int ch = 0; ch < 3; ch++) {
+      channels[ch].state = on;
+      writePin(channels[ch]);
+    }
+    delay(160);
+  }
+  for (int ch = 0; ch < 3; ch++) {
+    channels[ch].state = prev[ch];
+    writePin(channels[ch]);
+    publishState(channels[ch]); // restore + keep the app consistent
+  }
+}
+
 void onMessage(char *topic, byte *payload, unsigned int len) {
   String msg;
   for (unsigned int i = 0; i < len; i++) msg += (char)payload[i];
@@ -265,6 +284,11 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   logf("MQTT: rx  %s = \"%s\"", topic, msg.c_str());
 
   String t = topic;
+  if (t == String("home/") + DEVICE_ID + "/identify") {
+    logf("CMD:  identify — blinking to locate device");
+    identifyBlink();
+    return;
+  }
   if (t == String("home/") + DEVICE_ID + "/restart") {
     logf("CMD:  restart requested over MQTT — rebooting");
     char statusTopic[80];
@@ -324,6 +348,9 @@ void connectMQTT() {
       char restartTopic[80];
       snprintf(restartTopic, sizeof(restartTopic), "home/%s/restart", DEVICE_ID);
       mqtt.subscribe(restartTopic);
+      char identifyTopic[80];
+      snprintf(identifyTopic, sizeof(identifyTopic), "home/%s/identify", DEVICE_ID);
+      mqtt.subscribe(identifyTopic);
       for (size_t i = 0; i < NUM_CH; i++) publishState(channels[i]);
       publishTelemetry();
     } else {
