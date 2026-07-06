@@ -265,6 +265,14 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   logf("MQTT: rx  %s = \"%s\"", topic, msg.c_str());
 
   String t = topic;
+  if (t == String("home/") + DEVICE_ID + "/restart") {
+    logf("CMD:  restart requested over MQTT — rebooting");
+    char statusTopic[80];
+    snprintf(statusTopic, sizeof(statusTopic), "home/%s/status", DEVICE_ID);
+    mqtt.publish(statusTopic, "offline", true); // tell the app before we go
+    delay(300);
+    ESP.restart();
+  }
   for (size_t i = 0; i < NUM_CH; i++) {
     String setTopic = String("home/") + DEVICE_ID + "/" + channels[i].name + "/set";
     if (t == setTopic) {
@@ -313,6 +321,9 @@ void connectMQTT() {
       snprintf(sub, sizeof(sub), "home/%s/+/set", DEVICE_ID);
       mqtt.subscribe(sub);
       logf("MQTT: subscribed to %s", sub);
+      char restartTopic[80];
+      snprintf(restartTopic, sizeof(restartTopic), "home/%s/restart", DEVICE_ID);
+      mqtt.subscribe(restartTopic);
       for (size_t i = 0; i < NUM_CH; i++) publishState(channels[i]);
       publishTelemetry();
     } else {
