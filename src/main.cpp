@@ -278,6 +278,18 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   logf("      ignored: no channel matches this topic");
 }
 
+// Publish device health (signal, uptime, free heap) as retained JSON so the app
+// can show live diagnostics in the device detail sheet. Topic: home/<id>/telemetry
+void publishTelemetry() {
+  if (!mqtt.connected()) return;
+  char topic[80], payload[96];
+  snprintf(topic, sizeof(topic), "home/%s/telemetry", DEVICE_ID);
+  snprintf(payload, sizeof(payload),
+           "{\"rssi\":%d,\"uptime\":%lu,\"heap\":%u}",
+           WiFi.RSSI(), (unsigned long)(millis() / 1000), ESP.getFreeHeap());
+  mqtt.publish(topic, payload, true);
+}
+
 void connectMQTT() {
   if (!MQTT_HOST[0]) {
     logf("MQTT: no broker configured — send over serial: set host=.. port=8883 user=.. pass=..");
@@ -299,6 +311,7 @@ void connectMQTT() {
       mqtt.subscribe(sub);
       logf("MQTT: subscribed to %s", sub);
       for (size_t i = 0; i < NUM_CH; i++) publishState(channels[i]);
+      publishTelemetry();
     } else {
       logf("MQTT: connect failed rc=%d (%s), retry in 3s",
            mqtt.state(), mqttStateStr(mqtt.state()));
@@ -376,5 +389,6 @@ void loop() {
     lastBeat = millis();
     logf("alive  uptime=%lus  heap=%u  rssi=%d dBm",
          millis() / 1000, ESP.getFreeHeap(), WiFi.RSSI());
+    publishTelemetry();
   }
 }
