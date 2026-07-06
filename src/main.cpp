@@ -444,7 +444,7 @@ void setup() {
        MQTT_HOST[0] ? MQTT_HOST : "(unset)", MQTT_PORT, MQTT_USER, DEVICE_ID);
 
   net.setInsecure();          // skip TLS cert validation (fine for a home broker)
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(2048); // roomy enough for long OTA image URLs
   mqtt.setCallback(onMessage);
   if (MQTT_HOST[0]) mqtt.setServer(MQTT_HOST, MQTT_PORT);
 
